@@ -1,79 +1,76 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
 from supabase import create_client, Client
+import io
 
-# ------------------------ CONFIG SUPABASE ------------------------
-url = "https://bpagbbmedpgbbfxphpkx.supabase.co"
-key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJwYWdiYm1lZHBnYmJmeHBocGt4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MzU0NjE5NSwiZXhwIjoyMDY5MTIyMTk1fQ.pud2b5eGOxIam03D_iJUjE1Jz55G3jlZorUvvx8E0uk"
-supabase: Client = create_client(url, key)
+# =================== CONFIG ===================
+SUPABASE_URL = "https://bpagbbmedpgbbfxphpkx.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJwYWdiYm1lZHBnYmJmeHBocGt4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MzU0NjE5NSwiZXhwIjoyMDY5MTIyMTk1fQ.pud2b5eGOxIam03D_iJUjE1Jz55G3jlZorUvvx8E0uk"
+TABLE_NAME = "donnees_mna"
 
-# ------------------------ CHARGEMENT DES DONNÉES ------------------------
+# ================== INIT =====================
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+st.set_page_config(page_title="M&A Screener", layout="wide")
+
+# ================== LOAD DATA =================
 @st.cache_data(ttl=3600)
 def load_data():
-    response = supabase.table("donnees_mna").select("*").limit(100000).execute()
+    response = supabase.table(TABLE_NAME).select("*").range(0, 22999).execute()
     return pd.DataFrame(response.data)
 
 df = load_data()
 
-# ------------------------ UI ------------------------
-st.title("📊 Screening M&A – comparables boursiers")
+# ================== UI ========================
+st.title("📊 Screening M&A – Données Financières")
+st.markdown("Filtrez les entreprises par **région, pays, secteur et critères financiers**.")
 
-# Multiselects
-selected_regions = st.multiselect("🌍 Région(s)", sorted(df["Région"].dropna().unique().tolist()))
-selected_pays = st.multiselect("🏳️ Pays", sorted(df["Pays"].dropna().unique().tolist()))
-selected_secteurs = st.multiselect("🏭 Secteur(s)", sorted(df["Secteur"].dropna().unique().tolist()))
+# Sélecteurs multiples
+regions = st.multiselect("🌍 Régions", sorted(df["Région"].dropna().unique()))
+pays = st.multiselect("🏳️ Pays", sorted(df["Pays"].dropna().unique()))
+secteurs = st.multiselect("🏭 Secteurs", sorted(df["Secteur"].dropna().unique()))
 
-# Sélection du critère (poste) pour filtrer
-postes_dispo = sorted(df["Poste"].dropna().unique().tolist())
-critere = st.selectbox("📈 Critère de filtrage (ex: EBITDA, CA…)", postes_dispo)
+# Choix du critère de filtrage numérique (facultatif)
+critere = st.selectbox("📈 Critère numérique (optionnel)", [""] + [c for c in df.columns if c.isdigit()])
 
-# Conversion en numérique + gestion NaN
-col_numerique = pd.to_numeric(df[df["Poste"] == critere]["2024"], errors="coerce")
+min_val, max_val = None, None
+if critere:
+    col1, col2 = st.columns(2)
+    with col1:
+        min_val = st.number_input("Valeur minimale", value=float(df[critere].dropna().min()), step=1.0)
+    with col2:
+        max_val = st.number_input("Valeur maximale", value=float(df[critere].dropna().max()), step=1.0)
 
-# Slider Min/Max
-min_val = st.number_input("🔽 Valeur min (2024)", value=float(col_numerique.min(skipna=True)), step=1.0)
-max_val = st.number_input("🔼 Valeur max (2024)", value=float(col_numerique.max(skipna=True)), step=1.0)
+# ================= FILTRAGE ====================
+df_filtre = df.copy()
 
-# ------------------------ FILTRAGE ------------------------
-# Étape 1 : filtrer sur la ligne du critère uniquement
-df_critere = df[df["Poste"] == critere].copy()
-df_critere["Valeur2024"] = pd.to_numeric(df_critere["2024"], errors="coerce")
+if regions:
+    df_filtre = df_filtre[df_filtre["Région"].isin(regions)]
+if pays:
+    df_filtre = df_filtre[df_filtre["Pays"].isin(pays)]
+if secteurs:
+    df_filtre = df_filtre[df_filtre["Secteur"].isin(secteurs)]
+if critere and min_val is not None and max_val is not None:
+    entreprises_cible = df_filtre[
+        df_filtre["Poste"].str.contains("chiffre d'affaires", case=False, na=False) &
+        df_filtre[critere].between(min_val, max_val)
+    ]["Entreprise"].unique()
+    df_filtre = df_filtre[df_filtre["Entreprise"].isin(entreprises_cible)]
 
-filtre = (
-    df_critere["Valeur2024"] >= min_val
-) & (
-    df_critere["Valeur2024"] <= max_val
-)
-
-if selected_regions:
-    filtre &= df_critere["Région"].isin(selected_regions)
-if selected_pays:
-    filtre &= df_critere["Pays"].isin(selected_pays)
-if selected_secteurs:
-    filtre &= df_critere["Secteur"].isin(selected_secteurs)
-
-entreprises_filtrees = df_critere[filtre]["Entreprise"].unique()
-
-# Étape 2 : on récupère toutes les lignes pour ces entreprises
-df_filtre = df[df["Entreprise"].isin(entreprises_filtrees)].copy()
-
-st.success(f"{len(entreprises_filtrees)} entreprise(s) trouvée(s), {len(df_filtre)} ligne(s) affichée(s)")
+# ================ DISPLAY ======================
+st.success(f"{len(df_filtre)} lignes affichées sur {len(df)}")
 st.dataframe(df_filtre)
 
-# ------------------------ EXPORT EXCEL ------------------------
+# ================ EXPORT =======================
 @st.cache_data
 def to_excel(df):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        df.to_excel(writer, index=False, sheet_name="Résultats")
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Résultats')
     return output.getvalue()
 
-if not df_filtre.empty:
-    xlsx = to_excel(df_filtre)
-    st.download_button(
-        label="📥 Télécharger Excel",
-        data=xlsx,
-        file_name="resultats_mna.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+st.download_button(
+    label="📥 Télécharger les résultats (.xlsx)",
+    data=to_excel(df_filtre),
+    file_name="resultats_screening.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
