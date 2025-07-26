@@ -1,45 +1,82 @@
-import streamlit as st
+from pathlib import Path
 import pandas as pd
+import streamlit as st
 
-# Chargement
+# ========== CONFIGURATION ==========
+CSV_PATH = Path("Zonebourse_chunk_1_compte.csv")
+
+# ========== CHARGEMENT DU CSV ==========
+@st.cache_data
+def load_data():
+    df = pd.read_csv(CSV_PATH, sep=";", dtype=str)
+    df.iloc[:, 8:] = df.iloc[:, 8:].apply(pd.to_numeric, errors="coerce")
+    return df
+
+df = load_data()
+
+# ========== INTERFACE UTILISATEUR ==========
 st.title("🧠 Screening M&A – Comparables boursiers")
+st.markdown("📌 **Colonnes détectées :**")
+st.json(list(df.columns))
 
-# Chargement du CSV
-df = pd.read_csv("Zonebourse_chunk_1_compte.csv", sep=";")
+# === MENUS DEROULANTS ===
+regions = sorted(df["Région"].dropna().unique())
+pays = sorted(df["Pays"].dropna().unique())
+postes = sorted(df["Poste"].dropna().unique())
+annees = [col for col in df.columns if col.isnumeric()]
 
-# Nettoyage des noms de colonnes
-df.columns = df.columns.str.strip()
+col1, col2 = st.columns(2)
+with col1:
+    region_choisie = st.multiselect("🌍 Région(s)", regions, default=regions)
+with col2:
+    pays_choisis = st.multiselect("🏳️ Pays", pays, default=pays)
 
-# Filtres
-liste_regions = sorted(df["Région"].dropna().unique())
-liste_pays = sorted(df["Pays"].dropna().unique())
-liste_postes = sorted(df["Poste"].dropna().unique())
+postes_choisis = st.multiselect("📊 Postes à filtrer (pour le screening)", postes)
+filtre_poste = {}
 
-region = st.multiselect("🌍 Région(s)", options=liste_regions)
-pays = st.multiselect("🇺🇳 Pays", options=liste_pays)
-poste = st.selectbox("📌 Poste pivot (filtrage sur valeur)", options=liste_postes)
-annee = st.selectbox("📆 Année", options=[str(y) for y in range(2020, 2029)])
+# === FILTRES MULTIPLES PAR POSTE ===
+if postes_choisis:
+    for poste in postes_choisis:
+        st.markdown(f"### 🎯 Critères pour : {poste}")
+        col3, col4, col5 = st.columns(3)
+        with col3:
+            annee = st.selectbox(f"Année pour {poste}", annees, key=poste)
+        with col4:
+            min_val = st.number_input(f"Min ({annee})", value=0.0, key=f"{poste}_min")
+        with col5:
+            max_val = st.number_input(f"Max ({annee})", value=1e12, key=f"{poste}_max")
+        filtre_poste[poste] = (annee, min_val, max_val)
 
-min_val = st.number_input("📉 Valeur minimale", value=0.0)
-max_val = st.number_input("📈 Valeur maximale", value=1e9)
+# ========== FILTRAGE ==========
+df_filtre = df[
+    (df["Région"].isin(region_choisie)) &
+    (df["Pays"].isin(pays_choisis))
+]
 
-# Application des filtres
-df_filtered = df.copy()
+if filtre_poste:
+    entreprises_valides = set(df_filtre["Entreprise"].unique())
+    for poste, (annee, min_val, max_val) in filtre_poste.items():
+        entreprises_filtrees = df_filtre[
+            (df_filtre["Poste"] == poste) &
+            (df_filtre[annee] >= min_val) &
+            (df_filtre[annee] <= max_val)
+        ]["Entreprise"].unique()
+        entreprises_valides = entreprises_valides.intersection(entreprises_filtrees)
+    df_filtre = df_filtre[df_filtre["Entreprise"].isin(entreprises_valides)]
 
-if region:
-    df_filtered = df_filtered[df_filtered["Région"].isin(region)]
-if pays:
-    df_filtered = df_filtered[df_filtered["Pays"].isin(pays)]
-if poste:
-    df_filtered = df_filtered[df_filtered["Poste"] == poste]
-if annee:
-    df_filtered = df_filtered[df_filtered[annee].notna()]
-    df_filtered = df_filtered[df_filtered[annee].astype(float).between(min_val, max_val)]
+# ========== AFFICHAGE ==========
+st.success(f"{len(df_filtre)} lignes affichées")
+st.dataframe(df_filtre)
 
-# Affichage
-st.markdown(f"### Résultats : {len(df_filtered)} lignes")
-st.dataframe(df_filtered, use_container_width=True)
+# ========== EXPORT CSV ==========
+@st.cache_data
+def convert_df(df):
+    return df.to_csv(index=False).encode("utf-8")
 
-# Téléchargement
-csv = df_filtered.to_csv(index=False).encode("utf-8-sig")
-st.download_button("📥 Télécharger CSV filtré", data=csv, file_name="resultats_filtrés.csv", mime="text/csv")
+csv = convert_df(df_filtre)
+st.download_button(
+    label="📥 Télécharger le fichier filtré (.csv)",
+    data=csv,
+    file_name="comparables_filtrés.csv",
+    mime="text/csv"
+)
