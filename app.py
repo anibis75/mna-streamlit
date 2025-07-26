@@ -1,72 +1,72 @@
 import streamlit as st
 import pandas as pd
-from supabase import create_client, Client
+from supabase import create_client
+from io import BytesIO
 
-# ===================== SUPABASE CONFIG =====================
+# ------------------ CONFIG SUPABASE ------------------
+
 url = "https://bpagbbmedpgbbfxphpkx.supabase.co"
-key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJwYWdiYm1lZHBnYmJmeHBocGt4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM1NDYxOTUsImV4cCI6MjA2OTEyMjE5NX0.9najNtOfvPHtpA9aKqy56F15dqIZAcX-sA1GfNBzN68"
-supabase: Client = create_client(url, key)
+key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJwYWdiYm1lZHBnYmJmeHBocGt4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MzU0NjE5NSwiZXhwIjoyMDY5MTIyMTk1fQ.pud2b5eGOxIam03D_iJUjE1Jz55G3jlZorUvvx8E0uk"
+supabase = create_client(url, key)
 
-# ===================== LECTURE DES DONNÉES =====================
+# ------------------ EXPORT EXCEL ------------------
+
 @st.cache_data
-def load_data():
-    response = supabase.table("donnees_mna").select("*").execute()
-    df = pd.DataFrame(response.data)
-    return df
+def to_excel(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Résultats')
+    return output.getvalue()
 
-df = load_data()
+# ------------------ CHARGEMENT ------------------
 
-# DEBUG: Affiche les colonnes et un aperçu pour diagnostiquer l'erreur
-st.write("🧪 Colonnes détectées :", df.columns.tolist())
-st.write("📊 Aperçu des données :", df.head())
+st.title("🕵️ Screening M&A interactif")
 
-# ===================== INTERFACE =====================
-st.title("🕵️‍♂️ Screening M&A interactif")
+with st.spinner("Chargement des données..."):
+    data = supabase.table("donnees_mna").select("*").limit(100000).execute()
+    df = pd.DataFrame(data.data or [])
 
-# Choix Région
-region = st.selectbox("🌍 Région", [""] + sorted(df["Région"].dropna().unique().tolist()))
+if df.empty:
+    st.error("❌ Erreur : aucune donnée chargée depuis Supabase.")
+    st.stop()
 
-# Choix Pays
-pays = st.selectbox("🏳️ Pays", [""] + sorted(df["Pays"].dropna().unique().tolist()))
+# ------------------ FILTRES ------------------
 
-# Choix filtre poste + année + minimum
-poste_filtre = st.selectbox("📌 Filtre basé sur le poste", [""] + sorted(df["Poste"].dropna().unique().tolist()))
-annee = st.selectbox("📅 Année", [""] + [str(col) for col in df.columns if col.isdigit()])
-min_val = st.number_input("📉 Valeur minimale pour le poste sélectionné", min_value=0.0, value=0.0)
+col1, col2 = st.columns(2)
 
-# ===================== FILTRAGE =====================
-if poste_filtre and annee:
-    # Étape 1 : identifier les entreprises qui passent les filtres
-    df_filtre_base = df[
-        (df["Poste"] == poste_filtre) &
-        (df[annee].astype(float) >= min_val)
-    ]
-    entreprises_filtrées = df_filtre_base["Entreprise"].unique().tolist()
+with col1:
+    region = st.selectbox("🌍 Région", [""] + sorted(df["Région"].dropna().unique().tolist()))
+with col2:
+    pays = st.selectbox("🏳️ Pays", [""] + sorted(df["Pays"].dropna().unique().tolist()))
 
-    # Étape 2 : récupérer toutes les lignes de ces entreprises
-    df_filtre = df[df["Entreprise"].isin(entreprises_filtrées)]
+annees_disponibles = [col for col in df.columns if col.isnumeric()]
+annee_ref = st.selectbox("📅 Année de filtrage sur le CA", sorted(annees_disponibles, reverse=True))
+min_val = st.number_input("💰 Valeur minimale (CA)", value=0.0)
 
-    # Filtrage optionnel Région/Pays
-    if region:
-        df_filtre = df_filtre[df_filtre["Région"] == region]
-    if pays:
-        df_filtre = df_filtre[df_filtre["Pays"] == pays]
+# ------------------ LOGIQUE DE FILTRAGE ------------------
 
-    st.success(f"{len(df_filtre)} lignes affichées pour {len(entreprises_filtrées)} entreprises filtrées.")
-    st.dataframe(df_filtre)
+df_ca = df[df["Poste"] == "Chiffre d'affaires"]
+if region:
+    df_ca = df_ca[df_ca["Région"] == region]
+if pays:
+    df_ca = df_ca[df_ca["Pays"] == pays]
+df_ca = df_ca[pd.to_numeric(df_ca[annee_ref], errors="coerce") >= min_val]
 
-    # Export XLSX
-    @st.cache_data
-    def to_excel(df):
-        from io import BytesIO
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='MNA_Filtered')
-        return output.getvalue()
+entreprises_retenues = df_ca["Entreprise"].unique()
+df_filtre = df[df["Entreprise"].isin(entreprises_retenues)]
 
+# ------------------ AFFICHAGE ------------------
+
+st.success(f"✅ {len(entreprises_retenues)} entreprise(s) retenue(s)")
+st.dataframe(df_filtre)
+
+# ------------------ EXPORT ------------------
+
+if not df_filtre.empty:
     xlsx = to_excel(df_filtre)
-    st.download_button("⬇️ Télécharger en XLSX", xlsx, "filtered_data.xlsx")
-
-else:
-    st.info("📌 Choisis au minimum un poste, une année et une valeur pour filtrer.")
-
+    st.download_button(
+        label="📥 Télécharger en .xlsx",
+        data=xlsx,
+        file_name="resultats_mna.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
