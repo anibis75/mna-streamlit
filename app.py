@@ -1,6 +1,7 @@
 from pathlib import Path
 import pandas as pd
 import streamlit as st
+from io import BytesIO
 
 # ========== CONFIGURATION ==========
 CSV_PATH = Path("Zonebourse_chunk_1_compte.csv")
@@ -14,10 +15,8 @@ def load_data():
 
 df = load_data()
 
-# ========== INTERFACE UTILISATEUR ==========
+# ========== INTERFACE ==========
 st.title("🧠 Screening M&A – Comparables boursiers")
-st.markdown("📌 **Colonnes détectées :**")
-st.json(list(df.columns))
 
 # === MENUS DEROULANTS ===
 regions = sorted(df["Région"].dropna().unique())
@@ -68,15 +67,20 @@ if filtre_poste:
 st.success(f"{len(df_filtre)} lignes affichées")
 st.dataframe(df_filtre)
 
-# ========== EXPORT CSV ==========
+# ========== EXPORT XLSX ==========
 @st.cache_data
-def convert_df(df):
-    return df.to_csv(index=False).encode("utf-8")
+def to_excel(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name="Filtrage M&A")
+    processed_data = output.getvalue()
+    return processed_data
 
-csv = convert_df(df_filtre)
+xlsx = to_excel(df_filtre)
+
 st.download_button(
-    label="📥 Télécharger le fichier filtré (.csv)",
-    data=csv,
-    file_name="comparables_filtrés.csv",
-    mime="text/csv"
+    label="📥 Télécharger Excel propre (.xlsx)",
+    data=xlsx,
+    file_name="comparables_filtrés.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
