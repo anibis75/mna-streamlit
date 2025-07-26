@@ -1,74 +1,79 @@
 import streamlit as st
 import pandas as pd
-from supabase import create_client, Client
 from io import BytesIO
-import xlsxwriter
+from supabase import create_client, Client
 
-# --- CONFIGURATION SUPABASE ---
+# ------------------------ CONFIG SUPABASE ------------------------
 url = "https://bpagbbmedpgbbfxphpkx.supabase.co"
 key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJwYWdiYm1lZHBnYmJmeHBocGt4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MzU0NjE5NSwiZXhwIjoyMDY5MTIyMTk1fQ.pud2b5eGOxIam03D_iJUjE1Jz55G3jlZorUvvx8E0uk"
 supabase: Client = create_client(url, key)
 
-st.set_page_config(page_title="M&A Screener", layout="wide")
-st.title("🔍 Outil de screening M&A")
-
-# --- CHARGEMENT DES DONNÉES ---
-@st.cache_data(show_spinner=True)
+# ------------------------ CHARGEMENT DES DONNÉES ------------------------
+@st.cache_data(ttl=3600)
 def load_data():
-    data = supabase.table("donnees_mna").select("*").limit(100000).execute()
-    df = pd.DataFrame(data.data)
-    return df
-
-if st.button("🔄 Actualiser les données"):
-    st.cache_data.clear()
+    response = supabase.table("donnees_mna").select("*").limit(100000).execute()
+    return pd.DataFrame(response.data)
 
 df = load_data()
 
-# --- INTERFACES DE FILTRAGE ---
-with st.sidebar:
-    st.header("🎯 Filtres")
+# ------------------------ UI ------------------------
+st.title("📊 Screening M&A – comparables boursiers")
 
-    # Région
-    regions = sorted(df["Région"].dropna().unique())
-    selected_regions = st.multiselect("Régions", regions, default=regions)
+# Multiselects
+selected_regions = st.multiselect("🌍 Région(s)", sorted(df["Région"].dropna().unique().tolist()))
+selected_pays = st.multiselect("🏳️ Pays", sorted(df["Pays"].dropna().unique().tolist()))
+selected_secteurs = st.multiselect("🏭 Secteur(s)", sorted(df["Secteur"].dropna().unique().tolist()))
 
-    # Pays
-    pays = sorted(df["Pays"].dropna().unique())
-    selected_pays = st.multiselect("Pays", pays, default=pays)
+# Sélection du critère (poste) pour filtrer
+postes_dispo = sorted(df["Poste"].dropna().unique().tolist())
+critere = st.selectbox("📈 Critère de filtrage (ex: EBITDA, CA…)", postes_dispo)
 
-    # Secteurs
-    secteurs = sorted(df["Secteur"].dropna().unique())
-    selected_secteurs = st.multiselect("Secteurs", secteurs, default=secteurs)
+# Conversion en numérique + gestion NaN
+col_numerique = pd.to_numeric(df[df["Poste"] == critere]["2024"], errors="coerce")
 
-    # Choix du critère numérique
-    colonnes_numeriques = [col for col in df.columns if col.isnumeric()]
-    critere = st.selectbox("Critère de filtrage principal", colonnes_numeriques)
-    min_val = st.number_input("Valeur min", value=float(df[critere].min()), step=1.0)
-    max_val = st.number_input("Valeur max", value=float(df[critere].max()), step=1.0)
+# Slider Min/Max
+min_val = st.number_input("🔽 Valeur min (2024)", value=float(col_numerique.min(skipna=True)), step=1.0)
+max_val = st.number_input("🔼 Valeur max (2024)", value=float(col_numerique.max(skipna=True)), step=1.0)
 
-# --- FILTRAGE DES DONNÉES ---
-entreprises_filtrees = df[
-    (df["Région"].isin(selected_regions)) &
-    (df["Pays"].isin(selected_pays)) &
-    (df["Secteur"].isin(selected_secteurs)) &
-    (df[critere] >= min_val) &
-    (df[critere] <= max_val)
-]["Entreprise"].unique()
+# ------------------------ FILTRAGE ------------------------
+# Étape 1 : filtrer sur la ligne du critère uniquement
+df_critere = df[df["Poste"] == critere].copy()
+df_critere["Valeur2024"] = pd.to_numeric(df_critere["2024"], errors="coerce")
 
-df_filtre = df[df["Entreprise"].isin(entreprises_filtrees)]
+filtre = (
+    df_critere["Valeur2024"] >= min_val
+) & (
+    df_critere["Valeur2024"] <= max_val
+)
 
-# --- AFFICHAGE ---
-st.markdown(f"### Résultat : {len(df_filtre)} lignes")
-st.dataframe(df_filtre, use_container_width=True)
+if selected_regions:
+    filtre &= df_critere["Région"].isin(selected_regions)
+if selected_pays:
+    filtre &= df_critere["Pays"].isin(selected_pays)
+if selected_secteurs:
+    filtre &= df_critere["Secteur"].isin(selected_secteurs)
 
-# --- EXPORT EXCEL ---
+entreprises_filtrees = df_critere[filtre]["Entreprise"].unique()
+
+# Étape 2 : on récupère toutes les lignes pour ces entreprises
+df_filtre = df[df["Entreprise"].isin(entreprises_filtrees)].copy()
+
+st.success(f"{len(entreprises_filtrees)} entreprise(s) trouvée(s), {len(df_filtre)} ligne(s) affichée(s)")
+st.dataframe(df_filtre)
+
+# ------------------------ EXPORT EXCEL ------------------------
 @st.cache_data
 def to_excel(df):
     output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Filtré')
-        writer.save()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False, sheet_name="Résultats")
     return output.getvalue()
 
-xlsx = to_excel(df_filtre)
-st.download_button("📥 Télécharger Excel", xlsx, "resultat_filtré.xlsx")
+if not df_filtre.empty:
+    xlsx = to_excel(df_filtre)
+    st.download_button(
+        label="📥 Télécharger Excel",
+        data=xlsx,
+        file_name="resultats_mna.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
