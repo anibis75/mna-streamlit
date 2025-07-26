@@ -1,68 +1,48 @@
 import streamlit as st
 import pandas as pd
-import io
 
-st.set_page_config(page_title="M&A Screening", layout="wide")
+# Chargement
+st.title("🧠 Screening M&A – Comparables boursiers")
 
-# === Charger les données
-@st.cache_data
-def load_data():
-    df = pd.read_csv("Zonebourse_chunk_1_compte.csv", sep=";")
-    df = df.astype(object).where(pd.notnull(df), None)
-    return df
+# Chargement du CSV
+df = pd.read_csv("Zonebourse_chunk_1_compte.csv", sep=";")
 
-df = load_data()
+# Nettoyage des noms de colonnes
+df.columns = df.columns.str.strip()
 
-st.title("💼 Screening M&A – Comparables Boursiers")
+# Affichage des colonnes détectées (debug temporaire)
+st.write("🧪 Colonnes détectées :", df.columns.tolist())
 
-# === Colonnes utiles
-liste_annees = [col for col in df.columns if col.isdigit()]
-liste_postes = sorted(df["Poste"].dropna().unique())
+# Filtres
 liste_regions = sorted(df["Région"].dropna().unique())
 liste_pays = sorted(df["Pays"].dropna().unique())
+liste_postes = sorted(df["Poste"].dropna().unique())
 
-# === FILTRES
-st.sidebar.header("🔍 Filtres comparables")
+region = st.multiselect("🌍 Région(s)", options=liste_regions)
+pays = st.multiselect("🇺🇳 Pays", options=liste_pays)
+poste = st.selectbox("📌 Poste pivot (filtrage sur valeur)", options=liste_postes)
+annee = st.selectbox("📆 Année", options=[str(y) for y in range(2020, 2029)])
 
-poste_pivot = st.sidebar.selectbox("Poste pivot (filtrage)", liste_postes)
-annee = st.sidebar.selectbox("Année de référence", liste_annees)
-val_min = st.sidebar.number_input(f"Valeur min ({annee})", value=0.0)
-val_max = st.sidebar.number_input(f"Valeur max ({annee})", value=1e9)
+min_val = st.number_input("📉 Valeur minimale", value=0.0)
+max_val = st.number_input("📈 Valeur maximale", value=1e9)
 
-regions = st.sidebar.multiselect("🌍 Région(s)", options=liste_regions, default=liste_regions)
-pays = st.sidebar.multiselect("🇺🇳 Pays", options=liste_pays, default=liste_pays)
+# Application des filtres
+df_filtered = df.copy()
 
-# === Étape 1 : Filtrer les entreprises matching
-df_filtered = df[
-    (df["Poste"] == poste_pivot) &
-    (df["Région"].isin(regions)) &
-    (df["Pays"].isin(pays))
-].copy()
+if region:
+    df_filtered = df_filtered[df_filtered["Région"].isin(region)]
+if pays:
+    df_filtered = df_filtered[df_filtered["Pays"].isin(pays)]
+if poste:
+    df_filtered = df_filtered[df_filtered["Poste"] == poste]
+if annee:
+    df_filtered = df_filtered[df_filtered[annee].notna()]
+    df_filtered = df_filtered[df_filtered[annee].astype(float).between(min_val, max_val)]
 
-df_filtered[annee] = pd.to_numeric(df_filtered[annee], errors="coerce")
-df_filtered = df_filtered[
-    (df_filtered[annee] >= val_min) &
-    (df_filtered[annee] <= val_max)
-]
+# Affichage
+st.markdown(f"### Résultats : {len(df_filtered)} lignes")
+st.dataframe(df_filtered, use_container_width=True)
 
-entreprises_match = df_filtered["Entreprise"].dropna().unique()
-
-# === Étape 2 : Extraire toutes les lignes des entreprises retenues
-df_final = df[df["Entreprise"].isin(entreprises_match)]
-
-st.markdown(f"✅ **{len(entreprises_match)} entreprises sélectionnées** – {len(df_final)} lignes affichées")
-st.dataframe(df_final, use_container_width=True)
-
-# === EXPORT
-if not df_final.empty:
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df_final.to_excel(writer, index=False, sheet_name="Résultats")
-
-    buffer.seek(0)
-    st.download_button(
-        label="📥 Télécharger Excel",
-        data=buffer,
-        file_name="comparables_mna.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+# Téléchargement
+csv = df_filtered.to_csv(index=False).encode("utf-8-sig")
+st.download_button("📥 Télécharger CSV filtré", data=csv, file_name="resultats_filtrés.csv", mime="text/csv")
