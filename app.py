@@ -10,9 +10,6 @@ df = pd.read_csv("Zonebourse_chunk_1_compte.csv", sep=";")
 # Nettoyage des noms de colonnes
 df.columns = df.columns.str.strip()
 
-# Affichage des colonnes détectées (debug temporaire)
-st.write("🧪 Colonnes détectées :", df.columns.tolist())
-
 # Filtres
 liste_regions = sorted(df["Région"].dropna().unique())
 liste_pays = sorted(df["Pays"].dropna().unique())
