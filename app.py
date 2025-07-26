@@ -1,86 +1,69 @@
-from pathlib import Path
-import pandas as pd
 import streamlit as st
-from io import BytesIO
+import pandas as pd
+from supabase import create_client
 
-# ========== CONFIGURATION ==========
-CSV_PATH = Path("Zonebourse_chunk_1_compte.csv")
+# === CONFIG SUPABASE ===
+SUPABASE_URL = "https://bpagbbmedpgbbfxphpkx.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJwYWdiYm1lZHBnYmJmeHBocGt4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM1NDYxOTUsImV4cCI6MjA2OTEyMjE5NX0.9najNtOfvPHtpA9aKqy56F15dqIZAcX-sA1GfNBzN68"
 
-# ========== CHARGEMENT DU CSV ==========
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# === CHARGEMENT DES DONNÉES ===
 @st.cache_data
-def load_data():
-    df = pd.read_csv(CSV_PATH, sep=";", dtype=str)
-    df.iloc[:, 8:] = df.iloc[:, 8:].apply(pd.to_numeric, errors="coerce")
-    return df
+def charger_donnees():
+    response = supabase.table("donnees_mna").select("*").execute()
+    return pd.DataFrame(response.data)
 
-df = load_data()
+df = charger_donnees()
 
-# ========== INTERFACE ==========
-st.title("🧠 Screening M&A – Comparables boursiers")
-
-# === MENUS DEROULANTS ===
-regions = sorted(df["Région"].dropna().unique())
-pays = sorted(df["Pays"].dropna().unique())
-postes = sorted(df["Poste"].dropna().unique())
-annees = [col for col in df.columns if col.isnumeric()]
+# === INTERFACE ===
+st.title("Screening M&A 📊")
 
 col1, col2 = st.columns(2)
+
 with col1:
-    region_choisie = st.multiselect("🌍 Région(s)", regions, default=regions)
+    region = st.selectbox("Région", [""] + sorted(df["Région"].dropna().unique().tolist()))
+    pays = st.multiselect("Pays", sorted(df["Pays"].dropna().unique().tolist()))
+
 with col2:
-    pays_choisis = st.multiselect("🏳️ Pays", pays, default=pays)
+    poste_ref = st.selectbox("Poste de référence pour filtrage (ex: Chiffre d'affaires)", sorted(df["Poste"].unique()))
+    annee = st.selectbox("Année", ["2020", "2021", "2022", "2023", "2024", "2025", "2026", "2027"])
+    min_val = st.number_input(f"Valeur min. ({annee})", value=0.0)
+    max_val = st.number_input(f"Valeur max. ({annee})", value=1e12)
 
-postes_choisis = st.multiselect("📊 Postes à filtrer (pour le screening)", postes)
-filtre_poste = {}
+# === FILTRAGE ===
+df_filtre = df.copy()
 
-# === FILTRES MULTIPLES PAR POSTE ===
-if postes_choisis:
-    for poste in postes_choisis:
-        st.markdown(f"### 🎯 Critères pour : {poste}")
-        col3, col4, col5 = st.columns(3)
-        with col3:
-            annee = st.selectbox(f"Année pour {poste}", annees, key=poste)
-        with col4:
-            min_val = st.number_input(f"Min ({annee})", value=0.0, key=f"{poste}_min")
-        with col5:
-            max_val = st.number_input(f"Max ({annee})", value=1e12, key=f"{poste}_max")
-        filtre_poste[poste] = (annee, min_val, max_val)
+if region:
+    df_filtre = df_filtre[df_filtre["Région"] == region]
 
-# ========== FILTRAGE ==========
-df_filtre = df[
-    (df["Région"].isin(region_choisie)) &
-    (df["Pays"].isin(pays_choisis))
-]
+if pays:
+    df_filtre = df_filtre[df_filtre["Pays"].isin(pays)]
 
-if filtre_poste:
-    entreprises_valides = set(df_filtre["Entreprise"].unique())
-    for poste, (annee, min_val, max_val) in filtre_poste.items():
-        entreprises_filtrees = df_filtre[
-            (df_filtre["Poste"] == poste) &
-            (df_filtre[annee] >= min_val) &
-            (df_filtre[annee] <= max_val)
-        ]["Entreprise"].unique()
-        entreprises_valides = entreprises_valides.intersection(entreprises_filtrees)
-    df_filtre = df_filtre[df_filtre["Entreprise"].isin(entreprises_valides)]
+if poste_ref and annee:
+    entreprises_filtrees = df_filtre[
+        (df_filtre["Poste"] == poste_ref) &
+        (df_filtre[annee].astype(float) >= min_val) &
+        (df_filtre[annee].astype(float) <= max_val)
+    ]["Entreprise"].unique()
+    df_filtre = df_filtre[df_filtre["Entreprise"].isin(entreprises_filtrees)]
 
-# ========== AFFICHAGE ==========
-st.success(f"{len(df_filtre)} lignes affichées")
+# === AFFICHAGE ===
+st.write(f"Résultats filtrés : {len(df_filtre)} lignes")
 st.dataframe(df_filtre)
 
-# ========== EXPORT XLSX ==========
+# === EXPORT EXCEL ===
 @st.cache_data
 def to_excel(df):
+    from io import BytesIO
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name="Filtrage M&A")
-    processed_data = output.getvalue()
-    return processed_data
-
-xlsx = to_excel(df_filtre)
+        df.to_excel(writer, index=False, sheet_name='Résultats')
+    return output.getvalue()
 
 st.download_button(
-    label="📥 Télécharger Excel propre (.xlsx)",
-    data=xlsx,
-    file_name="comparables_filtrés.xlsx",
+    label="📥 Télécharger en Excel",
+    data=to_excel(df_filtre),
+    file_name="resultats_filtrés.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
