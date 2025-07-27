@@ -6,7 +6,7 @@ from supabase import create_client, Client
 
 # === CONFIGURATION SUPABASE ===============================================
 url = os.getenv("SUPABASE_URL") or "https://bpagbbmedpgbbfxphpkx.supabase.co"
-key = os.getenv("SUPABASE_ANON_KEY") or "YOUR_ANON_KEY"
+key = os.getenv("SUPABASE_ANON_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJwYWdiYm1lZHBnYmJmeHBocGt4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MzU0NjE5NSwiZXhwIjoyMDY5MTIyMTk1fQ.pud2b5eGOxIam03D_iJUjE1Jz55G3jlZorUvvx8E0uk"
 supabase: Client = create_client(url, key)
 
 # === CHARGEMENT DES DONNÉES ===============================================
