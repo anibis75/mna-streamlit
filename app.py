@@ -100,9 +100,18 @@ if poste and annee and borne_min is not None:
 where_sql = " AND ".join(clauses) or "TRUE"
 query_sql = f"SELECT * FROM {TABLE} WHERE {where_sql}"
 
-df = run_query(query_sql)
+# ─────────── Debug SQL ───────────
+st.subheader("🧪 SQL générée")
+st.code(query_sql, language="sql")
 
-# ─────────── Affichage ───────────
+# ─────────── Résultat ───────────
+with st.spinner("⏳ Chargement des résultats…"):
+    df = run_query(query_sql)
+
+st.subheader("🧪 Aperçu résultat")
+st.dataframe(df.head(50))
+
+# ─────────── Affichage final ───────────
 st.markdown(f"### Résultats : {len(df):,} lignes")
 st.dataframe(df.head(10_000), use_container_width=True)
 if len(df) > 10_000:
