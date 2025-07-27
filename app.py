@@ -1,5 +1,3 @@
-# app.py – version debug affichage colonnes + strip
-
 from io import BytesIO
 import duckdb
 import pandas as pd
@@ -13,33 +11,25 @@ TABLE = "main.zonebourse_chunk_compte"
 # ─────────── Connexion MotherDuck ───────────
 con = duckdb.connect(f"md:{DB}?motherduck_token={TOKEN}")
 
-# Affiche les colonnes pour debug
-colonnes = con.execute(f"PRAGMA table_info('{TABLE.split('.')[-1]}')").fetchall()
-st.write("🧪 Colonnes disponibles :", [col[1] for col in colonnes])
-
 # ─────────── Utilitaires ───────────
 def sql_list(seq):
     return ",".join("'" + str(s).replace("'", "''") + "'" for s in seq)
 
 @st.cache_data
 def distinct(col: str):
-    try:
-        return [
-            r[0]
-            for r in con.execute(
-                f'SELECT DISTINCT "{col.strip()}" FROM {TABLE} '
-                f'WHERE "{col.strip()}" IS NOT NULL ORDER BY 1'
-            ).fetchall()
-        ]
-    except Exception as e:
-        st.error(f"❌ Erreur colonne `{col}` : {e}")
-        return []
+    return [
+        r[0]
+        for r in con.execute(
+            f'SELECT DISTINCT "{col}" FROM {TABLE} '
+            f'WHERE "{col}" IS NOT NULL ORDER BY 1'
+        ).fetchall()
+    ]
 
 @st.cache_data
 def year_columns():
     return [
-        col[1]
-        for col in colonnes
+        col[0]
+        for col in con.execute(f"PRAGMA table_info('{TABLE.split('.')[-1]}')").fetchall()
         if col[1].isdigit()
     ]
 
@@ -68,10 +58,11 @@ if poste:
     annee = st.selectbox("📅 Année", sorted(year_columns()))
     if annee:
         min_val, max_val = con.execute(
-            f'''SELECT min(CAST("{annee}" AS DOUBLE)),
-                       max(CAST("{annee}" AS DOUBLE))
+            f'''SELECT MIN(CAST("{annee}" AS DOUBLE)),
+                       MAX(CAST("{annee}" AS DOUBLE))
                 FROM {TABLE}
-                WHERE "Poste" = '{poste.replace("'", "''")}' '''
+                WHERE "Poste" = '{poste.replace("'", "''")}'
+                  AND TRY_CAST("{annee}" AS DOUBLE) IS NOT NULL '''
         ).fetchone()
         if min_val is not None and max_val is not None and min_val != max_val:
             min_val, max_val = float(min_val), float(max_val)
@@ -91,7 +82,7 @@ if secteurs: clauses.append(f'"Secteur" IN ({sql_list(secteurs)})')
 if poste:    clauses.append(f'"Poste" = \'{poste.replace("'", "''")}\'')
 
 if poste and annee and borne_min is not None:
-    clauses.append(f'CAST("{annee}" AS DOUBLE) BETWEEN {borne_min} AND {borne_max}')
+    clauses.append(f'TRY_CAST("{annee}" AS DOUBLE) BETWEEN {borne_min} AND {borne_max}')
 
 where_sql = " AND ".join(clauses) or "TRUE"
 query_sql = f"SELECT * FROM {TABLE} WHERE {where_sql}"
