@@ -6,8 +6,8 @@ from io import BytesIO
 
 # ── MotherDuck connexion ──────────────────────────────────────────────────────
 DB     = os.getenv("MD_DB", "my_db")
-TOKEN  = os.getenv("MOTHERDUCK_TOKEN")  # export MOTHERDUCK_TOKEN="…"
-TABLE  = 'main.zonebourse_chunk_compte'  # schéma.table
+TOKEN  = os.getenv("MOTHERDUCK_TOKEN")
+TABLE  = 'main.zonebourse_chunk_compte'
 
 con = duckdb.connect(f"md:{DB}?motherduck_token={TOKEN}")
 
@@ -52,21 +52,19 @@ if critere:
     annee = st.selectbox("📅 Année", sorted(year_cols))
 
     if annee:
-        vals = con.execute(
-            f'SELECT MIN(CAST("{annee}" AS DOUBLE)), MAX(CAST("{annee}" AS DOUBLE)) '
-            f'FROM {TABLE} WHERE "Poste" = \'{critere.replace("\'","\'\'")}\'' 
-        ).fetchone()
-        min_val, max_val = [float(x) if x is not None else 0.0 for x in vals]
-        if min_val == max_val:
-            st.info("Aucune plage pour cette année.")
-        else:
-            borne_min, borne_max = st.slider(
-                "Plage de valeurs",
-                min_value=min_val,
-                max_value=max_val,
-                value=(min_val, max_val),
-                step=max((max_val - min_val) / 100, 1.0),
-            )
+        nums = con.execute(
+            f'SELECT CAST("{annee}" AS DOUBLE) FROM {TABLE} '
+            f'WHERE "Poste" = \'{critere.replace("\'","\'\'")}\''
+        ).fetchdf()[annee]
+        min_val, max_val = float(nums.min()), float(nums.max())
+
+        borne_min, borne_max = st.slider(
+            "Plage de valeurs",
+            min_value=min_val,
+            max_value=max_val,
+            value=(min_val, max_val),
+            step=max((max_val - min_val) / 100, 1.0),
+        )
 
 # ── Exécution requête & affichage ────────────────────────────────────────────
 query = build_query(regions, pays, secteurs, critere, annee, borne_min, borne_max)
