@@ -1,20 +1,19 @@
-# app.py  – version corrigée (plus de IndexingError)
+# app.py – version prête à l’emploi (token MotherDuck en dur)
 
-import os
 from io import BytesIO
-
 import duckdb
 import pandas as pd
 import streamlit as st
 
-# ────────────────────── MotherDuck ──────────────────────
-DB     = os.getenv("MD_DB", "my_db")
-TOKEN  = os.getenv("MOTHERDUCK_TOKEN")
-TABLE  = "main.zonebourse_chunk_compte"
+# ─────────── Paramètres fixes ───────────
+TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImF6YWQuaG9zc2VpbmlAc2tlbWEuZWR1Iiwic2Vzc2lvbiI6ImF6YWQuaG9zc2Vpbmkuc2tlbWEuZWR1IiwicGF0IjoiYkZMVHkydUUyMHFmNVhnMkE1TXh4M1FBZkhwclh0cTBRbnl2cHc4TjhLNCIsInVzZXJJZCI6IjllYTRjNDUzLTIyNWEtNGE5NS04Y2NmLWVhMjk1NTUyNmFjZCIsImlzcyI6Im1kX3BhdCIsInJlYWRPbmx5IjpmYWxzZSwidG9rZW5UeXBlIjoicmVhZF93cml0ZSIsImlhdCI6MTc1MzYwNjUyMn0.b8KgBs8dKKymTLu4hdQ-6ZHiwjJrec9JA7_9q764EzE"
+DB    = "my_db"
+TABLE = "main.zonebourse_chunk_compte"
 
+# ─────────── Connexion MotherDuck ───────────
 con = duckdb.connect(f"md:{DB}?motherduck_token={TOKEN}")
 
-# ─────────────────── Fonctions utilitaires ──────────────
+# ─────────── Utilitaires ───────────
 def sql_list(seq):
     return ",".join("'" + str(s).replace("'", "''") + "'" for s in seq)
 
@@ -32,9 +31,7 @@ def distinct(col: str):
 def year_columns():
     return [
         col[0]
-        for col in con.execute(
-            f"PRAGMA table_info('{TABLE.split('.')[-1]}')"
-        ).fetchall()
+        for col in con.execute(f"PRAGMA table_info('{TABLE.split('.')[-1]}')").fetchall()
         if col[1].isdigit()
     ]
 
@@ -50,8 +47,8 @@ def to_excel(df: pd.DataFrame) -> bytes:
     buf.seek(0)
     return buf.getvalue()
 
-# ───────────────────── Interface ────────────────────────
-st.title("📊 Screening M&A (MotherDuck)")
+# ─────────── Interface ───────────
+st.title("📊 Screening M&A (MotherDuck)")
 
 regions  = st.multiselect("🌍 Région(s)",  distinct("Région"))
 pays     = st.multiselect("🏳️ Pays",       distinct("Pays"))
@@ -78,7 +75,7 @@ if poste:
                 step=max((max_val - min_val) / 200, 1.0),
             )
 
-# ─────────────────── Construction requête ───────────────
+# ─────────── Construction requête ───────────
 clauses = []
 if regions:  clauses.append(f'"Région"  IN ({sql_list(regions)})')
 if pays:     clauses.append(f'"Pays"    IN ({sql_list(pays)})')
@@ -93,7 +90,7 @@ query_sql = f"SELECT * FROM {TABLE} WHERE {where_sql}"
 
 df = run_query(query_sql)
 
-# ───────────────────── Affichage ────────────────────────
+# ─────────── Affichage ───────────
 st.markdown(f"### Résultats : {len(df):,} lignes")
 st.dataframe(df.head(10_000), use_container_width=True)
 if len(df) > 10_000:
