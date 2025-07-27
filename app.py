@@ -3,6 +3,9 @@ import duckdb
 import pandas as pd
 import streamlit as st
 
+# 🔧 Options de débug Streamlit
+st.set_option("client.showErrorDetails", True)
+
 # ─────────── Paramètres fixes ───────────
 TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImF6YWQuaG9zc2VpbmlAc2tlbWEuZWR1Iiwic2Vzc2lvbiI6ImF6YWQuaG9zc2Vpbmkuc2tlbWEuZWR1IiwicGF0IjoiYkZMVHkydUUyMHFmNVhnMkE1TXh4M1FBZkhwclh0cTBRbnl2cHc4TjhLNCIsInVzZXJJZCI6IjllYTRjNDUzLTIyNWEtNGE5NS04Y2NmLWVhMjk1NTUyNmFjZCIsImlzcyI6Im1kX3BhdCIsInJlYWRPbmx5IjpmYWxzZSwidG9rZW5UeXBlIjoicmVhZF93cml0ZSIsImlhdCI6MTc1MzYwNjUyMn0.b8KgBs8dKKymTLu4hdQ-6ZHiwjJrec9JA7_9q764EzE"
 DB    = "my_db"
@@ -15,7 +18,7 @@ con = duckdb.connect(f"md:{DB}?motherduck_token={TOKEN}")
 def sql_list(values):
     return ",".join("'" + v.replace("'", "''") + "'" for v in values)
 
-@st.cache_data
+# ❌ Attention : désactivation temporaire du cache pour déboguer
 def distinct(col: str):
     try:
         return [
@@ -28,19 +31,16 @@ def distinct(col: str):
         st.error(f"❌ Erreur colonne {col} : {e}")
         return []
 
-@st.cache_data
 def year_columns():
     return [
         col[1]
         for col in con.execute(f"PRAGMA table_info('{TABLE.split('.')[-1]}')").fetchall()
-        if col[1].isdigit()
+        if col[1].isdigit() and col[2] == "DOUBLE"
     ]
 
-@st.cache_data(show_spinner="⏳ Exécution SQL …")
 def run_query(sql: str) -> pd.DataFrame:
     return con.execute(sql).df()
 
-@st.cache_data
 def to_excel(df: pd.DataFrame) -> bytes:
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
@@ -51,7 +51,7 @@ def to_excel(df: pd.DataFrame) -> bytes:
 # ─────────── Interface ───────────
 st.title("📊 Screening M&A (MotherDuck)")
 
-# Debug info colonnes
+# 🔍 Debug info colonnes
 try:
     colonnes_debug = con.execute(f"PRAGMA table_info('{TABLE.split('.')[-1]}')").df()
     st.expander("🧪 Colonnes disponibles").write(colonnes_debug["name"].tolist())
@@ -92,34 +92,25 @@ clauses = []
 if regions:  clauses.append(f'"Région"  IN ({sql_list(regions)})')
 if pays:     clauses.append(f'"Pays"    IN ({sql_list(pays)})')
 if secteurs: clauses.append(f'"Secteur" IN ({sql_list(secteurs)})')
-if poste:    clauses.append(f'"Poste" = \'{poste.replace("\'","\'\'")}\'')
-
+if poste:    clauses.append(f'"Poste" = \'{poste.replace("'", "''")}\'')
 if poste and annee and borne_min is not None:
     clauses.append(f'CAST("{annee}" AS DOUBLE) BETWEEN {borne_min} AND {borne_max}')
 
 where_sql = " AND ".join(clauses) or "TRUE"
 query_sql = f"SELECT * FROM {TABLE} WHERE {where_sql}"
 
-# ─────────── Debug SQL ───────────
-st.subheader("🧪 SQL générée")
-st.code(query_sql, language="sql")
-
 # ─────────── Résultat ───────────
-with st.spinner("⏳ Chargement des résultats…"):
+try:
     df = run_query(query_sql)
-
-st.subheader("🧪 Aperçu résultat")
-st.dataframe(df.head(50))
-
-# ─────────── Affichage final ───────────
-st.markdown(f"### Résultats : {len(df):,} lignes")
-st.dataframe(df.head(10_000), use_container_width=True)
-if len(df) > 10_000:
-    st.caption("Affichage limité aux 10 000 premières lignes ; l’export contient tout.")
-
-st.download_button(
-    "📥 Exporter en XLSX",
-    data=to_excel(df),
-    file_name="filtrage_mna.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+    st.markdown(f"### Résultats : {len(df):,} lignes")
+    st.dataframe(df.head(10_000), use_container_width=True)
+    if len(df) > 10_000:
+        st.caption("Affichage limité aux 10 000 premières lignes ; l’export contient tout.")
+    st.download_button(
+        "📥 Exporter en XLSX",
+        data=to_excel(df),
+        file_name="filtrage_mna.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+except Exception as e:
+    st.error(f"Erreur exécution requête finale : {e}")
