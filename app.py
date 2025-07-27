@@ -1,4 +1,5 @@
-# app.py
+# app.py  – version corrigée (plus de IndexingError)
+
 import os
 from io import BytesIO
 
@@ -6,27 +7,35 @@ import duckdb
 import pandas as pd
 import streamlit as st
 
-# ─────────── Config MotherDuck ───────────
-DB     = os.getenv("MD_DB", "my_db")          # export MD_DB=my_db
-TOKEN  = os.getenv("MOTHERDUCK_TOKEN")        # export MOTHERDUCK_TOKEN=xxxx
-TABLE  = "main.zonebourse_chunk_compte"       # schéma.table à adapter
+# ────────────────────── MotherDuck ──────────────────────
+DB     = os.getenv("MD_DB", "my_db")
+TOKEN  = os.getenv("MOTHERDUCK_TOKEN")
+TABLE  = "main.zonebourse_chunk_compte"
 
 con = duckdb.connect(f"md:{DB}?motherduck_token={TOKEN}")
 
-# ─────────── Utilitaires ───────────
+# ─────────────────── Fonctions utilitaires ──────────────
 def sql_list(seq):
     return ",".join("'" + str(s).replace("'", "''") + "'" for s in seq)
 
 @st.cache_data
 def distinct(col: str):
-    q = f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY 1'
-    return [r[0] for r in con.execute(q).fetchall()]
+    return [
+        r[0]
+        for r in con.execute(
+            f'SELECT DISTINCT "{col}" FROM {TABLE} '
+            f'WHERE "{col}" IS NOT NULL ORDER BY 1'
+        ).fetchall()
+    ]
 
 @st.cache_data
 def year_columns():
     return [
-        c[0] for c in con.execute(f"PRAGMA table_info('{TABLE.split('.')[-1]}')").fetchall()
-        if c[1].isdigit()
+        col[0]
+        for col in con.execute(
+            f"PRAGMA table_info('{TABLE.split('.')[-1]}')"
+        ).fetchall()
+        if col[1].isdigit()
     ]
 
 @st.cache_data(show_spinner="⏳ Exécution SQL …")
@@ -41,7 +50,7 @@ def to_excel(df: pd.DataFrame) -> bytes:
     buf.seek(0)
     return buf.getvalue()
 
-# ─────────── Interface ───────────
+# ───────────────────── Interface ────────────────────────
 st.title("📊 Screening M&A (MotherDuck)")
 
 regions  = st.multiselect("🌍 Région(s)",  distinct("Région"))
@@ -59,9 +68,7 @@ if poste:
                 FROM {TABLE}
                 WHERE "Poste" = '{poste.replace("'", "''")}' '''
         ).fetchone()
-        if min_val is None or max_val is None or min_val == max_val:
-            st.warning("Valeurs manquantes ou identiques, aucun filtrage numérique appliqué.")
-        else:
+        if min_val is not None and max_val is not None and min_val != max_val:
             min_val, max_val = float(min_val), float(max_val)
             borne_min, borne_max = st.slider(
                 "Plage de valeurs",
@@ -71,7 +78,7 @@ if poste:
                 step=max((max_val - min_val) / 200, 1.0),
             )
 
-# ─────────── Construction requête ───────────
+# ─────────────────── Construction requête ───────────────
 clauses = []
 if regions:  clauses.append(f'"Région"  IN ({sql_list(regions)})')
 if pays:     clauses.append(f'"Pays"    IN ({sql_list(pays)})')
@@ -84,9 +91,9 @@ if poste and annee and borne_min is not None:
 where_sql = " AND ".join(clauses) or "TRUE"
 query_sql = f"SELECT * FROM {TABLE} WHERE {where_sql}"
 
-# ─────────── Résultats ───────────
 df = run_query(query_sql)
 
+# ───────────────────── Affichage ────────────────────────
 st.markdown(f"### Résultats : {len(df):,} lignes")
 st.dataframe(df.head(10_000), use_container_width=True)
 if len(df) > 10_000:
