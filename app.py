@@ -1,93 +1,97 @@
 import os
 import streamlit as st
+import duckdb
 import pandas as pd
 from io import BytesIO
-from supabase import create_client, Client
 
-# === CONFIGURATION SUPABASE ===============================================
-url = os.getenv("SUPABASE_URL") or "https://bpagbbmedpgbbfxphpkx.supabase.co"
-key = os.getenv("SUPABASE_ANON_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJwYWdiYm1lZHBnYmJmeHBocGt4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MzU0NjE5NSwiZXhwIjoyMDY5MTIyMTk1fQ.pud2b5eGOxIam03D_iJUjE1Jz55G3jlZorUvvx8E0uk"
-supabase: Client = create_client(url, key)
+# ── MotherDuck connexion ──────────────────────────────────────────────────────
+DB     = os.getenv("MD_DB", "my_db")
+TOKEN  = os.getenv("MOTHERDUCK_TOKEN")  # export MOTHERDUCK_TOKEN="…"
+TABLE  = 'main.zonebourse_chunk_compte'  # schéma.table
 
-# === CHARGEMENT DES DONNÉES ===============================================
-@st.cache_data(show_spinner="📥 Chargement des données…")
-def load_data(batch_size: int = 10_000) -> pd.DataFrame:
-    rows, start = [], 0
-    while True:
-        end = start + batch_size - 1
-        resp = (
-            supabase.table("donnees_mna")
-            .select("*")
-            .range(start, end)
-            .execute()
-        )
-        data = resp.data or []
-        rows.extend(data)
-        if len(data) < batch_size:
-            break
-        start += batch_size
-    df = pd.DataFrame(rows)
-    year_cols = [c for c in df.columns if c.isdigit() and len(c) == 4]
-    df[year_cols] = df[year_cols].apply(pd.to_numeric, errors="coerce")
-    return df
+con = duckdb.connect(f"md:{DB}?motherduck_token={TOKEN}")
 
-df = load_data()
+# ── Helpers SQL ───────────────────────────────────────────────────────────────
+def sql_list(vals):
+    return ",".join([f"'{v.replace('\'','\'\'')}'" for v in vals])
 
-# === UI STREAMLIT ==========================================================
-st.title("📊 Screening M&A interactif")
+@st.cache_data(show_spinner="📥 Récupération des choix…")
+def get_distinct(col):
+    q = f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY 1'
+    return [r[0] for r in con.execute(q).fetchall()]
 
-regions = st.multiselect("🌍 Région(s)", sorted(df["Région"].dropna().unique()))
-pays     = st.multiselect("🏳️ Pays",      sorted(df["Pays"].dropna().unique()))
-secteurs = st.multiselect("🏭 Secteur(s)",  sorted(df["Secteur"].dropna().unique()))
+def build_query(regions, pays, secteurs, poste, annee, borne_min, borne_max):
+    where = ["1=1"]
+    if regions:  where.append(f'"Région"  IN ({sql_list(regions)})')
+    if pays:     where.append(f'"Pays"    IN ({sql_list(pays)})')
+    if secteurs: where.append(f'"Secteur" IN ({sql_list(secteurs)})')
+    if poste:
+        where.append(f'"Poste" = \'{poste.replace("\'","\'\'")}\'')
 
-df_filtré = df
-if regions:
-    df_filtré = df_filtré[df_filtré["Région"].isin(regions)]
-if pays:
-    df_filtré = df_filtré[df_filtré["Pays"].isin(pays)]
-if secteurs:
-    df_filtré = df_filtré[df_filtré["Secteur"].isin(secteurs)]
+        if annee and borne_min is not None and borne_max is not None:
+            where.append(f'CAST("{annee}" AS DOUBLE) BETWEEN {borne_min} AND {borne_max}')
+    clause = " AND ".join(where)
+    return f'SELECT * FROM {TABLE} WHERE {clause}'
 
-liste_postes = sorted(df_filtré["Poste"].dropna().unique())
+# ── UI Streamlit ──────────────────────────────────────────────────────────────
+st.title("📊 Screening M&A interactif (MotherDuck)")
+
+regions  = st.multiselect("🌍 Région(s)",  get_distinct("Région"))
+pays     = st.multiselect("🏳️ Pays",       get_distinct("Pays"))
+secteurs = st.multiselect("🏭 Secteur(s)", get_distinct("Secteur"))
+
+liste_postes = get_distinct("Poste")
 critere = st.selectbox("📌 Poste financier", liste_postes)
 
+annee = None
+borne_min = borne_max = None
+
 if critere:
-    postes_numeriques = [c for c in df_filtré.columns if c.isdigit() and len(c) == 4]
-    annee = st.selectbox("📅 Année", postes_numeriques)
+    year_cols = [c[0] for c in con.execute(
+        f"PRAGMA table_info('{TABLE.split('.')[-1]}')").fetchall() if c[1].isdigit()]
+    annee = st.selectbox("📅 Année", sorted(year_cols))
 
-    df_tmp = df_filtré[df_filtré["Poste"] == critere]
-    vals = pd.to_numeric(df_tmp[annee], errors="coerce").dropna()
+    if annee:
+        vals = con.execute(
+            f'SELECT MIN(CAST("{annee}" AS DOUBLE)), MAX(CAST("{annee}" AS DOUBLE)) '
+            f'FROM {TABLE} WHERE "Poste" = \'{critere.replace("\'","\'\'")}\'' 
+        ).fetchone()
+        min_val, max_val = [float(x) if x is not None else 0.0 for x in vals]
+        if min_val == max_val:
+            st.info("Aucune plage pour cette année.")
+        else:
+            borne_min, borne_max = st.slider(
+                "Plage de valeurs",
+                min_value=min_val,
+                max_value=max_val,
+                value=(min_val, max_val),
+                step=max((max_val - min_val) / 100, 1.0),
+            )
 
-    if not vals.empty:
-        min_val, max_val = float(vals.min()), float(vals.max())
-        borne_min, borne_max = st.slider(
-            "Plage de valeurs",
-            min_value=min_val,
-            max_value=max_val,
-            value=(min_val, max_val),
-            step=max((max_val - min_val) / 100, 1.0),
-        )
-        entreprises_filtrées = df_tmp[
-            (vals >= borne_min) & (vals <= borne_max)
-        ]["Entreprise"].unique()
-        df_filtré = df_filtré[df_filtré["Entreprise"].isin(entreprises_filtrées)]
-    else:
-        st.warning("Aucune valeur numérique pour ce poste / année.")
-        st.stop()
+# ── Exécution requête & affichage ────────────────────────────────────────────
+query = build_query(regions, pays, secteurs, critere, annee, borne_min, borne_max)
 
-st.markdown(f"### Résultats : {len(df_filtré):,} lignes")
-st.dataframe(df_filtré, use_container_width=True)
+@st.cache_data(show_spinner="⏳ Exécution de la requête…")
+def run_query(sql):
+    return con.execute(sql).df()
 
-# === EXPORT XLSX ===========================================================
+df = run_query(query)
+
+st.markdown(f"### Résultats : {len(df):,} lignes")
+st.dataframe(df.head(10000), use_container_width=True)
+if len(df) > 10000:
+    st.caption("⚠️ Affichage limité aux 10 000 premières lignes. Le téléchargement contient tout.")
+
+# ── Export Excel ─────────────────────────────────────────────────────────────
 @st.cache_data
 def to_excel(dframe: pd.DataFrame) -> bytes:
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
         dframe.to_excel(writer, index=False, sheet_name="Données filtrées")
-    output.seek(0)
-    return output.getvalue()
+    buf.seek(0)
+    return buf.getvalue()
 
-xlsx = to_excel(df_filtré)
+xlsx = to_excel(df)
 st.download_button(
     "📥 Exporter en XLSX",
     data=xlsx,
