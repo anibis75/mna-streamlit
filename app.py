@@ -1,98 +1,100 @@
+# app.py
 import os
-import streamlit as st
-import duckdb
-import pandas as pd
 from io import BytesIO
 
-# ── MotherDuck connexion ──────────────────────────────────────────────────────
-DB     = os.getenv("MD_DB", "my_db")
-TOKEN  = os.getenv("MOTHERDUCK_TOKEN")
-TABLE  = 'main.zonebourse_chunk_compte'
+import duckdb
+import pandas as pd
+import streamlit as st
+
+# ─────────── Config MotherDuck ───────────
+DB     = os.getenv("MD_DB", "my_db")          # export MD_DB=my_db
+TOKEN  = os.getenv("MOTHERDUCK_TOKEN")        # export MOTHERDUCK_TOKEN=xxxx
+TABLE  = "main.zonebourse_chunk_compte"       # schéma.table à adapter
 
 con = duckdb.connect(f"md:{DB}?motherduck_token={TOKEN}")
 
-# ── Helpers SQL ───────────────────────────────────────────────────────────────
-def sql_list(vals):
-    return ",".join([f"'{v.replace('\'','\'\'')}'" for v in vals])
+# ─────────── Utilitaires ───────────
+def sql_list(seq):
+    return ",".join("'" + str(s).replace("'", "''") + "'" for s in seq)
 
-@st.cache_data(show_spinner="📥 Récupération des choix…")
-def get_distinct(col):
+@st.cache_data
+def distinct(col: str):
     q = f'SELECT DISTINCT "{col}" FROM {TABLE} WHERE "{col}" IS NOT NULL ORDER BY 1'
     return [r[0] for r in con.execute(q).fetchall()]
 
-def build_query(regions, pays, secteurs, poste, annee, borne_min, borne_max):
-    where = ["1=1"]
-    if regions:  where.append(f'"Région"  IN ({sql_list(regions)})')
-    if pays:     where.append(f'"Pays"    IN ({sql_list(pays)})')
-    if secteurs: where.append(f'"Secteur" IN ({sql_list(secteurs)})')
-    if poste:
-        where.append(f'"Poste" = \'{poste.replace("\'","\'\'")}\'')
+@st.cache_data
+def year_columns():
+    return [
+        c[0] for c in con.execute(f"PRAGMA table_info('{TABLE.split('.')[-1]}')").fetchall()
+        if c[1].isdigit()
+    ]
 
-        if annee and borne_min is not None and borne_max is not None:
-            where.append(f'CAST("{annee}" AS DOUBLE) BETWEEN {borne_min} AND {borne_max}')
-    clause = " AND ".join(where)
-    return f'SELECT * FROM {TABLE} WHERE {clause}'
-
-# ── UI Streamlit ──────────────────────────────────────────────────────────────
-st.title("📊 Screening M&A interactif (MotherDuck)")
-
-regions  = st.multiselect("🌍 Région(s)",  get_distinct("Région"))
-pays     = st.multiselect("🏳️ Pays",       get_distinct("Pays"))
-secteurs = st.multiselect("🏭 Secteur(s)", get_distinct("Secteur"))
-
-liste_postes = get_distinct("Poste")
-critere = st.selectbox("📌 Poste financier", liste_postes)
-
-annee = None
-borne_min = borne_max = None
-
-if critere:
-    year_cols = [c[0] for c in con.execute(
-        f"PRAGMA table_info('{TABLE.split('.')[-1]}')").fetchall() if c[1].isdigit()]
-    annee = st.selectbox("📅 Année", sorted(year_cols))
-
-    if annee:
-        nums = con.execute(
-            f'SELECT CAST("{annee}" AS DOUBLE) FROM {TABLE} '
-            f'WHERE "Poste" = \'{critere.replace("\'","\'\'")}\''
-        ).fetchdf()[annee]
-        min_val, max_val = float(nums.min()), float(nums.max())
-
-        borne_min, borne_max = st.slider(
-            "Plage de valeurs",
-            min_value=min_val,
-            max_value=max_val,
-            value=(min_val, max_val),
-            step=max((max_val - min_val) / 100, 1.0),
-        )
-
-# ── Exécution requête & affichage ────────────────────────────────────────────
-query = build_query(regions, pays, secteurs, critere, annee, borne_min, borne_max)
-
-@st.cache_data(show_spinner="⏳ Exécution de la requête…")
-def run_query(sql):
+@st.cache_data(show_spinner="⏳ Exécution SQL …")
+def run_query(sql: str) -> pd.DataFrame:
     return con.execute(sql).df()
 
-df = run_query(query)
-
-st.markdown(f"### Résultats : {len(df):,} lignes")
-st.dataframe(df.head(10000), use_container_width=True)
-if len(df) > 10000:
-    st.caption("⚠️ Affichage limité aux 10 000 premières lignes. Le téléchargement contient tout.")
-
-# ── Export Excel ─────────────────────────────────────────────────────────────
 @st.cache_data
-def to_excel(dframe: pd.DataFrame) -> bytes:
+def to_excel(df: pd.DataFrame) -> bytes:
     buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-        dframe.to_excel(writer, index=False, sheet_name="Données filtrées")
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+        df.to_excel(w, index=False, sheet_name="Données filtrées")
     buf.seek(0)
     return buf.getvalue()
 
-xlsx = to_excel(df)
+# ─────────── Interface ───────────
+st.title("📊 Screening M&A (MotherDuck)")
+
+regions  = st.multiselect("🌍 Région(s)",  distinct("Région"))
+pays     = st.multiselect("🏳️ Pays",       distinct("Pays"))
+secteurs = st.multiselect("🏭 Secteur(s)", distinct("Secteur"))
+poste    = st.selectbox("📌 Poste financier", distinct("Poste"))
+
+annee = borne_min = borne_max = None
+if poste:
+    annee = st.selectbox("📅 Année", sorted(year_columns()))
+    if annee:
+        min_val, max_val = con.execute(
+            f'''SELECT min(CAST("{annee}" AS DOUBLE)),
+                       max(CAST("{annee}" AS DOUBLE))
+                FROM {TABLE}
+                WHERE "Poste" = '{poste.replace("'", "''")}' '''
+        ).fetchone()
+        if min_val is None or max_val is None or min_val == max_val:
+            st.warning("Valeurs manquantes ou identiques, aucun filtrage numérique appliqué.")
+        else:
+            min_val, max_val = float(min_val), float(max_val)
+            borne_min, borne_max = st.slider(
+                "Plage de valeurs",
+                min_value=min_val,
+                max_value=max_val,
+                value=(min_val, max_val),
+                step=max((max_val - min_val) / 200, 1.0),
+            )
+
+# ─────────── Construction requête ───────────
+clauses = []
+if regions:  clauses.append(f'"Région"  IN ({sql_list(regions)})')
+if pays:     clauses.append(f'"Pays"    IN ({sql_list(pays)})')
+if secteurs: clauses.append(f'"Secteur" IN ({sql_list(secteurs)})')
+if poste:    clauses.append(f'"Poste" = \'{poste.replace("\'","\'\'")}\'')
+
+if poste and annee and borne_min is not None:
+    clauses.append(f'CAST("{annee}" AS DOUBLE) BETWEEN {borne_min} AND {borne_max}')
+
+where_sql = " AND ".join(clauses) or "TRUE"
+query_sql = f"SELECT * FROM {TABLE} WHERE {where_sql}"
+
+# ─────────── Résultats ───────────
+df = run_query(query_sql)
+
+st.markdown(f"### Résultats : {len(df):,} lignes")
+st.dataframe(df.head(10_000), use_container_width=True)
+if len(df) > 10_000:
+    st.caption("Affichage limité aux 10 000 premières lignes ; l’export contient tout.")
+
 st.download_button(
     "📥 Exporter en XLSX",
-    data=xlsx,
+    data=to_excel(df),
     file_name="filtrage_mna.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
